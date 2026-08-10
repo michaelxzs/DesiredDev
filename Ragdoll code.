@@ -1,0 +1,263 @@
+Ragdoll Script -
+local ragdoll = {}
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local Debris = game:GetService("Debris")
+
+local makeCollidable = {
+	"Head",
+	"Left Arm",
+	"Right Arm",
+	"Left Leg",
+	"Right Leg",
+	"Torso"
+}
+local steppedConnections = {}
+local movementBlockConnections = {}
+local savedSpeeds = {}
+
+function ragdoll.Start(character)
+	local player = Players:GetPlayerFromCharacter(character)
+	if player and player:GetAttribute("ShiftlockOn") then
+		player:SetAttribute("ShiftlockOn", nil)
+	end
+
+	if player then
+		pcall(function()
+			game.ReplicatedStorage.DisableControls:FireClient(player)
+		end)
+	end
+
+	local ragdollFlag = character:FindFirstChild("Ragdoll")
+	if not ragdollFlag then
+		ragdollFlag = Instance.new("BoolValue")
+		ragdollFlag.Name = "Ragdoll"
+		ragdollFlag.Value = false
+		ragdollFlag.Parent = character
+	end
+
+	if ragdollFlag.Value then return end
+	ragdollFlag.Value = true
+
+	local hum = character:FindFirstChild("Humanoid")
+	if hum then
+		savedSpeeds[character] = {
+			WalkSpeed = hum.WalkSpeed,
+			JumpPower = hum.JumpPower,
+		}
+	end
+
+	for _, joint in pairs(character:GetDescendants()) do
+		if joint:IsA("Motor6D") then
+		--makes torsso not stayup.
+			if joint.Name == "RootJoint" then
+				joint.Enabled = false
+			end
+
+			local socket = Instance.new("BallSocketConstraint")
+			local a0 = Instance.new("Attachment")
+			local a1 = Instance.new("Attachment")
+
+			a0.CFrame = joint.C0
+			a1.CFrame = joint.C1
+			a0.Name = "RagdollAttachment"
+			a1.Name = "RagdollAttachment"
+
+			a0.Parent = joint.Part0
+			a1.Parent = joint.Part1
+			socket.Attachment0 = a0
+			socket.Attachment1 = a1
+			socket.LimitsEnabled = true
+			socket.TwistLimitsEnabled = true
+			socket.Parent = joint.Parent
+
+			joint.Enabled = false
+		end
+	end
+
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if hrp then
+		hrp.Anchored = false
+	end
+
+	if hum then
+		hum.PlatformStand = true
+		hum.AutoRotate = false
+		hum:ChangeState(Enum.HumanoidStateType.Physics)
+	end
+
+	steppedConnections[character] = steppedConnections[character] or {}
+	for _, part in pairs(character:GetChildren()) do
+		if table.find(makeCollidable, part.Name) and part:IsA("BasePart") then
+			part.CanCollide = true
+
+			local connection
+			connection = RunService.Stepped:Connect(function()
+				if not part:IsDescendantOf(game) then
+					if steppedConnections[character] and steppedConnections[character][part] then
+						steppedConnections[character][part]:Disconnect()
+						steppedConnections[character][part] = nil
+					end
+					return
+				end
+				part.CanCollide = true
+			end)
+			steppedConnections[character][part] = connection
+		end
+	end
+
+	if hrp then
+		local att = Instance.new("Attachment", hrp)
+		local av = Instance.new("AngularVelocity", att)
+		av.MaxTorque = 50000
+		av.AngularVelocity = Vector3.new(0,2.5,12.5)
+		av.Attachment0 = att
+		Debris:AddItem(att, 1)
+	end
+
+	if hum then
+		movementBlockConnections[character] = RunService.Stepped:Connect(function()
+			if not character or not character.Parent or hum.Health <= 0 then
+				if movementBlockConnections[character] then
+					movementBlockConnections[character]:Disconnect()
+					movementBlockConnections[character] = nil
+				end
+				return
+			end
+			hum.WalkSpeed = 0.01
+			hum.JumpPower = 0.01
+		end)
+	end
+end
+
+function ragdoll.Stop(character)
+	local hum = character:FindFirstChild("Humanoid")
+	local player = Players:GetPlayerFromCharacter(character)
+
+	if player then
+		pcall(function()
+			game.ReplicatedStorage.EnableControls:FireClient(player)
+		end)
+	end
+
+	if hum then
+		hum.PlatformStand = false
+		hum.AutoRotate = true
+	end
+
+	for _, obj in pairs(character:GetDescendants()) do
+		if obj:IsA("BallSocketConstraint") then
+			obj:Destroy()
+		elseif obj:IsA("Motor6D") then
+			obj.Enabled = true
+		elseif obj:IsA("Attachment") and obj.Name == "RagdollAttachment" then
+			obj:Destroy()
+		end
+	end
+
+	if steppedConnections[character] then
+		for part, conn in pairs(steppedConnections[character]) do
+			if conn then
+				conn:Disconnect()
+			end
+		end
+		steppedConnections[character] = nil
+	end
+
+	if movementBlockConnections[character] then
+		movementBlockConnections[character]:Disconnect()
+		movementBlockConnections[character] = nil
+	end
+
+	local ragdollFlag = character:FindFirstChild("Ragdoll")
+	if ragdollFlag then
+		ragdollFlag.Value = false
+	end
+
+	if hum and savedSpeeds[character] then
+		hum.WalkSpeed = savedSpeeds[character].WalkSpeed
+		hum.JumpPower = savedSpeeds[character].JumpPower
+		savedSpeeds[character] = nil
+	end
+
+	if hum and hum.Health > 0 then
+		hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+	end
+end
+
+return ragdoll
+------------------------------
+Ragdoll manager-
+local ragdollMod = require(script.Parent:WaitForChild("Ragdoll"))
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local RagdollManager = {}
+
+local ragdollData = {}  
+RunService.Heartbeat:Connect(function()
+	local now = tick()
+	for userId, data in pairs(ragdollData) do
+		if now >= data.EndTime then
+			if data.Character and data.Character.Parent then
+				ragdollMod.Stop(data.Character)
+			end
+			ragdollData[userId] = nil
+		end
+	end
+end)
+
+function RagdollManager.AddRagdoll(character, duration)
+	local player = Players:GetPlayerFromCharacter(character)
+	if not player then return end
+	local userId = player.UserId
+
+	ragdollMod.Start(character)
+	ragdollData[userId] = {
+		Character = character,
+		EndTime = tick() + duration
+	}
+	
+end
+
+function RagdollManager.OnCharacterAdded(character)
+	local player = Players:GetPlayerFromCharacter(character)
+	if not player then return end
+
+	local userId = player.UserId
+	local data = ragdollData[userId]
+
+	if data and tick() < data.EndTime then
+		ragdollMod.Start(character)
+		data.Character = character
+	
+	else
+		ragdollData[userId] = nil
+	end
+end
+
+function RagdollManager.OnPlayerRemoving(player)
+	local data = ragdollData[player.UserId]
+	if data and data.Character and data.Character.Parent then
+		ragdollMod.Stop(data.Character)
+	end
+	ragdollData[player.UserId] = nil
+end
+
+Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(RagdollManager.OnCharacterAdded)
+end)
+
+Players.PlayerRemoving:Connect(RagdollManager.OnPlayerRemoving)
+
+return RagdollManager
+-----------------------------
+State - local RagdollManager = require(script:WaitForChild("RagdollManager"))
+
+local State = {}
+
+function State.AddRagdoll(character, duration)
+	RagdollManager.AddRagdoll(character, duration)
+end
+
+return State
